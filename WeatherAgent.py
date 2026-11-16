@@ -46,42 +46,49 @@ def get_current_weather(city: str, days: int = 7) -> dict:
     days = max(1, min(days, 16))
 
     print(f"[Tool Executing] Fetching weather data for: {city}")
+    try:
+        # Convert city name to lat / long using Open-Meteo geocoding API
+        geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+        geo_res = requests.get(geo_url, params={"name": city, "count": 1}, timeout=10)
+        geo_res.raise_for_status()
+        geo_data = geo_res.json()
 
-    # Convert city name to lat / long using Open-Meteo geocoding API
-    geo_url = "https://geocoding-api.open-meteo.com/v1/search"
-    geo_res = requests.get(geo_url, params={"name": city, "count": 1}, timeout=10).json()
+        # error if cant find the city
+        if not geo_data.get("results"):
+            return f"Error: Could not find coordinates for {city}"
 
-    # error if cant find the city
-    if not geo_res.get("results"):
-        return f"Error: Could not find coordinates for {city}"
+        # assign location, lat, long,
+        location = geo_data["results"][0]
+        resolved_name = f"{location['name']}, {location.get('admin1', '')}, {location.get('country', '')})"
 
-    # assign location, lat, long,
-    location = geo_res["results"][0]
-    lat = location["latitude"]
-    long = location["longitude"]
-    resolved_name = f"{location['name']}, {location.get('admin1', '')}, {location.get('country', '')})"
+        lat = location["latitude"]
+        long = location["longitude"]
 
-    # fetch weather using coordinates
-    weather_url = "https://api.open-meteo.com/v1/forecast"
-    weather_params = {
-        "latitude": lat,
-        "longitude": long,
-        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max",
-        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
-        "temperature_unit": "fahrenheit",
-        "wind_speed_unit": "mph",
-        "timezone": "auto",
-        "forecast_days": days,
-    }
-    weather_res = requests.get(weather_url, params=weather_params, timeout=10).json()
+        # fetch weather using coordinates
+        weather_url = "https://api.open-meteo.com/v1/forecast"
+        weather_params = {
+            "latitude": lat,
+            "longitude": long,
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max",
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "timezone": "auto",
+            "forecast_days": days,
+        }
+        weather_res = requests.get(weather_url, params=weather_params, timeout=10)
+        weather_res.raise_for_status()
+        weather_data = weather_res.json()
 
-    return {
-        "resolved_location": resolved_name,
-        "current_weather": weather_res.get("current", {}),
-        "current_units": weather_res.get("current_units", {}),
-        "daily_weather": weather_res.get("daily", {}),
-        "daily_units": weather_res.get("daily_units")
-    }
+        return {
+            "resolved_location": resolved_name,
+            "current_weather": weather_data.get("current", {}),
+            "current_units": weather_data.get("current_units", {}),
+            "daily_weather": weather_data.get("daily", {}),
+            "daily_units": weather_data.get("daily_units")
+        }
+    except requests.RequestException as e:
+        return {"status": "service_unavailable", "message": f"Weather API request failed {e}"}
 
 def select_model(client, current_model=None):
     """
@@ -127,11 +134,12 @@ def create_chat(client, model_name):
             system_instruction=(
                 f"Today's date is {today}. "
                 "You are a helpful weather and general assistant. "
-                "Use get_current_weather when the user asks about current conditions. "
-                "Calculate how many days ahead they are asking about, up to 16 days. "
+                "Pass only the plain city name (without state/country abbreviations) to get_current_weather. "
+                "If the tool returns status 'service_unavailable', stop immediately and tell the user the weather service is temporarily unreachable—do not retry. "
                 "Summarize the returned data and WMO weather codes in plain, conversational language."
             ),
-            tools=[get_current_weather]
+            tools=[get_current_weather],
+            automatic_function_calling = types.AutomaticFunctionCallingConfig(maximum_remote_calls=2),
         )
     )
 
@@ -159,8 +167,11 @@ def start_chat(chat):
             print("\nWaiting for Gemini...")
             response = chat.send_message(user_input)
             print(f"\nAgent :")
-            # print LLM response with markdown formatting
-            console.print(Markdown(response.text))
+            if response.text:
+                # print LLM response with markdown formatting
+                console.print(Markdown(response.text))
+            else:
+                print("Model did not return a response.")
             print()
 
         # except API error
