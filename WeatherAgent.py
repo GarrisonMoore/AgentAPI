@@ -7,6 +7,7 @@ import requests
 from google.genai.errors import APIError
 from rich.console import Console
 from rich.markdown import Markdown
+from Utils import Tools
 """
 Resources: 
 * https://open-meteo.com/en/docs
@@ -45,7 +46,8 @@ def get_current_weather(city: str, days: int = 7) -> dict:
     """
     days = max(1, min(days, 16))
 
-    print(f"[Tool Executing] Fetching weather data for: {city}")
+    print(f"[Tool Executing] Calling Open-Meteo API\n"
+          f"Fetching {days} day forecast for: {city}")
     try:
         # Convert city name to lat / long using Open-Meteo geocoding API
         geo_url = "https://geocoding-api.open-meteo.com/v1/search"
@@ -87,6 +89,7 @@ def get_current_weather(city: str, days: int = 7) -> dict:
             "daily_weather": weather_data.get("daily", {}),
             "daily_units": weather_data.get("daily_units")
         }
+
     except requests.RequestException as e:
         return {"status": "service_unavailable", "message": f"Weather API request failed {e}"}
 
@@ -97,10 +100,10 @@ def select_model(client, current_model=None):
     available_models = []
 
     # loop through all available models returned by the API
-    for m in client.models.list():
+    for model in client.models.list():
         # check if model supports text chat
-        if "generateContent" in (m.supported_actions or []):
-            clean_name = m.name.replace("models/", "")
+        if "generateContent" in (model.supported_actions or []):
+            clean_name = model.name.replace("models/", "")
             available_models.append(clean_name)
 
     if current_model:
@@ -152,7 +155,7 @@ def start_chat(chat):
     # chat loop
     while True:
         # User input
-        user_input = input("You: ").strip()
+        user_input = input(f"{Tools.ORANGE}You: {Tools.RESET}").strip()
 
         # quit condition
         if user_input.lower() in ["exit", "quit"]:
@@ -166,7 +169,7 @@ def start_chat(chat):
         try:
             print("\nWaiting for Gemini...")
             response = chat.send_message(user_input)
-            print(f"\nAgent :")
+            print(f"\n{Tools.GREEN}Agent :{Tools.RESET}")
             if response.text:
                 # print LLM response with markdown formatting
                 console.print(Markdown(response.text))
