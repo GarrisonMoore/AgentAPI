@@ -1,13 +1,12 @@
 from datetime import datetime
-import os
-import questionary
 from google import genai
 from google.genai import types
-import requests
 from google.genai.errors import APIError
 from rich.console import Console
 from rich.markdown import Markdown
 from Utils import Tools
+import requests
+import questionary
 """
 Resources: 
 * https://open-meteo.com/en/docs
@@ -31,14 +30,8 @@ This program is a harness for Gemini studio API. Uses the LLM for converting bas
       
 5. Run this file and go through setup.
 """
-# Global for Markdown console
+# Global for Markdown compatible console
 console = Console()
-
-def clear_console():
-    """
-    Clears console output.
-    """
-    os.system('cls' if os.name == 'nt' else 'clear')
 
 def get_current_weather(city: str, days: int = 7) -> dict:
     """
@@ -57,7 +50,7 @@ def get_current_weather(city: str, days: int = 7) -> dict:
 
         # error if cant find the city
         if not geo_data.get("results"):
-            return f"Error: Could not find coordinates for {city}"
+            return f"{Tools.RED}Error: Could not find coordinates for {Tools.YELLOW}{city}{Tools.RESET}"
 
         # assign location, lat, long,
         location = geo_data["results"][0]
@@ -91,7 +84,33 @@ def get_current_weather(city: str, days: int = 7) -> dict:
         }
 
     except requests.RequestException as e:
-        return {"status": "service_unavailable", "message": f"Weather API request failed {e}"}
+        return {"status": f"{Tools.RED}service_unavailable{Tools.RESET}", "message": f"Weather API request failed {e}"}
+
+def setup():
+    """
+    Runs initial setup of the Gemini API.
+    """
+    Tools.clear_terminal()
+
+    print(f"{Tools.BLUE}🌥{Tools.RESET} Welcome to the Weather Agent {Tools.BLUE}🌦{Tools.RESET}"
+          "\n* This program only works with Gemini studio API keys. Get one here:"
+          "\n   https://aistudio.google.com/api-keys\n")
+
+    # Loop to validate an API key
+    while True:
+        gem_api_key = input(f"{Tools.CYAN}Enter your Gemini API key: {Tools.RESET}").strip()
+        client = genai.Client(api_key=gem_api_key)
+
+        try:
+            Tools.clear_terminal()
+            print("Checking API key...")
+            # probe the model list API endpoint
+            selected_model = select_model(client)
+            print("Connection Successful.")
+            return client, selected_model
+
+        except APIError:
+            print(f"{Tools.RED}Key invalid, try again{Tools.RESET}")
 
 def select_model(client, current_model=None):
     """
@@ -112,6 +131,7 @@ def select_model(client, current_model=None):
     # create the submenu for model selection
     choice = questionary.select(
         "Model Selection:",
+        qmark="",
         choices = available_models,
         # if current model is in the list then use it, else assign None
         default=current_model if current_model in available_models else None
@@ -122,31 +142,7 @@ def select_model(client, current_model=None):
 
     return choice
 
-def create_chat(client, model_name):
-    """
-    Creates a session with  the chosen model and weather tool
-    """
-    today = datetime.now().strftime("%A, %B %d, %Y")
-
-    # clients.chats.create automatically manages convo history, agent prompts, and tool calling
-    return client.chats.create(
-        # Using the free flash lite model
-        model=model_name,
-        # generate instructions for the model
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                f"Today's date is {today}. "
-                "You are a helpful weather and general assistant. "
-                "Pass only the plain city name (without state/country abbreviations) to get_current_weather. "
-                "If the tool returns status 'service_unavailable', stop immediately and tell the user the weather service is temporarily unreachable—do not retry. "
-                "Summarize the returned data and WMO weather codes in plain, conversational language."
-            ),
-            tools=[get_current_weather],
-            automatic_function_calling = types.AutomaticFunctionCallingConfig(maximum_remote_calls=2),
-        )
-    )
-
-def start_chat(chat):
+def start_chat(chat, model_name):
     """
     Initializes chat loop with the chosen model.
     """
@@ -165,11 +161,14 @@ def start_chat(chat):
         if not user_input:
             continue
 
+        response = None
         # try to send the user input message and receive response
         try:
-            print("\nWaiting for Gemini...")
-            response = chat.send_message(user_input)
-            print(f"\n{Tools.GREEN}Agent :{Tools.RESET}")
+
+            with console.status("Waiting for Gemini...", spinner="dots"):
+                response = chat.send_message(user_input)
+
+            print(f"\n{Tools.GREEN}{model_name} :{Tools.RESET}")
             if response.text:
                 # print LLM response with markdown formatting
                 console.print(Markdown(response.text))
@@ -179,40 +178,40 @@ def start_chat(chat):
 
         # except API error
         except Exception as e:
-            print(f"\nAPI Error {e}\n")
+            print(f"\n{Tools.RED}API Error {e}{Tools.RESET}\n")
 
-def setup():
+def create_chat(client, model_name):
     """
-    Runs initial setup of the Gemini API.
+    Creates a session with the chosen model and weather tool
     """
-    clear_console()
+    today = datetime.now().strftime("%A, %B %d, %Y")
 
-    print("Welcome to the Weather Agent."
-          "\n* This program only works with Gemini cloud API keys. Get one here:"
-          "\n   https://aistudio.google.com/api-keys\n")
-
-    # Loop to validate an API key
-    while True:
-        gem_api_key = input("Enter your Gemini API key: ").strip()
-        client = genai.Client(api_key=gem_api_key)
-
-        try:
-            clear_console()
-            print("Checking API key...")
-            # probe the model list API endpoint
-            selected_model = select_model(client)
-            print("Connection Successful.")
-            return client, selected_model
-
-        except APIError:
-            print("Key invalid, try again")
+    # clients.chats.create automatically manages convo history, agent prompts, and tool calling
+    return client.chats.create(
+        # variable passes the model selected in the 'select_model' function
+        model=model_name,
+        # generate instructions for the model
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                f"Today's date is {today}. "
+                "You are a helpful weather and general assistant. "
+                "Pass only the plain city name (without state/country abbreviations) to get_current_weather. "
+                "If the tool cannot locate the users destination, print the returned error and explain."
+                "If the tool returns status 'service_unavailable', stop immediately and tell the user the weather service is temporarily unreachable and print the returned error—do not retry. "
+                "If anything returns an error, print the returned error and explain to the user what the issue may be."
+                "Summarize the returned data and WMO weather codes in plain, conversational language."
+            ),
+            tools=[get_current_weather],
+            automatic_function_calling = types.AutomaticFunctionCallingConfig(maximum_remote_calls=2),
+        )
+    )
 
 def main():
     # call the setup function
     client, current_model = setup()
     chat = create_chat(client, current_model)
 
-    clear_console()
+    Tools.clear_terminal()
 
     # TUI menu
     while True:
@@ -231,16 +230,16 @@ def main():
         ).ask()
 
         if choice == "Start New Chat":
-            clear_console()
-            start_chat(chat)
+            Tools.clear_terminal()
+            start_chat(chat, current_model)
 
         elif choice == "Setup":
-            clear_console()
+            Tools.clear_terminal()
             client, current_model = setup()
             chat = create_chat(client, current_model)
 
         elif choice == model_selection_label:
-            clear_console()
+            Tools.clear_terminal()
             new_model = select_model(client, current_model)
             current_model = new_model
             chat = create_chat(client, current_model)
