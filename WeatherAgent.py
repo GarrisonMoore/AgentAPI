@@ -1,4 +1,6 @@
 """
+By Garrison Moore - 11/19/2026
+
 Resources:
 * https://open-meteo.com/en/docs
 * https://pypi.org/project/google-genai/
@@ -13,19 +15,14 @@ APIs used :
 
  === STEPS TO INSTALL ===
 
-1. Install google-genai:
-      pip install google-genai
+1. 1. Install required packages:
+      pip install google-genai requests questionary rich
 
-2. Install requests for Open-Meteo API:
-      pip install requests
-
-3. Install questionary for the TUI:
-      pip install questionary rich
-
-4. Get a Gemini Studio API key:
+2. Get a Gemini Studio API key:
       https://aistudio.google.com/api-keys
 
-5. Run this file and go through setup.
+3. Run this file in a terminal and follow the setup prompt:
+      python WeatherAgent_11.py
 """
 from datetime import datetime
 from google import genai
@@ -44,6 +41,7 @@ def get_current_weather(city: str, days: int = 7) -> dict:
     """
     Fetches (days) weather forecast for a given city string name.
     """
+    # cap maximum days to 16 for open-meteo
     days = max(1, min(days, 16))
 
     print(f"[Tool Executing] Calling Open-Meteo API\n"
@@ -51,6 +49,7 @@ def get_current_weather(city: str, days: int = 7) -> dict:
     try:
         # Convert city name to lat / long using Open-Meteo geocoding API
         geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+        # use requests to call the geocoding API
         geo_res = requests.get(geo_url, params={"name": city, "count": 1}, timeout=10)
         geo_res.raise_for_status()
         geo_data = geo_res.json()
@@ -65,14 +64,15 @@ def get_current_weather(city: str, days: int = 7) -> dict:
         if not geo_data.get("results"):
             return {"status": "not_found", "message": f"Could not find coordinates for {city}"}
 
-        # assign location, lat, long,
+        # assign final results returned from Open-Meteo
         location = geo_data["results"][0]
         resolved_name = f"{location['name']}, {location.get('admin1', '')}, {location.get('country', '')}"
 
+        # final translated coordinates
         lat = location["latitude"]
         long = location["longitude"]
 
-        # fetch weather using coordinates
+        # fetch weather from forecast API using the coordinates
         weather_url = "https://api.open-meteo.com/v1/forecast"
         weather_params = {
             "latitude": lat,
@@ -84,10 +84,14 @@ def get_current_weather(city: str, days: int = 7) -> dict:
             "timezone": "auto",
             "forecast_days": days,
         }
+        # use requests to call the forecast API
         weather_res = requests.get(weather_url, params=weather_params, timeout=10)
+        # raise_for_status raises an HTTP error if one occurs
         weather_res.raise_for_status()
+        # assign the json results as a new variable
         weather_data = weather_res.json()
 
+        # return the weather data
         return {
             "resolved_location": resolved_name,
             "current_weather": weather_data.get("current", {}),
@@ -105,11 +109,12 @@ def setup():
     """
     Tools.clear_terminal()
 
+    # Welcome screen
     print(f"{Tools.BLUE}🌥{Tools.RESET} Welcome to the Weather Agent {Tools.BLUE}🌦{Tools.RESET}"
           "\n* This program only works with Gemini studio API keys. Get one here:"
           "\n   https://aistudio.google.com/api-keys\n")
 
-    # Loop to validate an API key
+    # Loop to let the user enter an API key and validates the key by probing the model list endpoint
     while True:
         gem_api_key = input(f"{Tools.CYAN}Enter your Gemini API key: {Tools.RESET}").strip()
         client = genai.Client(api_key=gem_api_key)
@@ -117,9 +122,12 @@ def setup():
         try:
             Tools.clear_terminal()
             print("Checking API key...")
-            # probe the model list API endpoint
+
+            # probe the model list API endpoint by calling the select_model() function
             selected_model = select_model(client)
             print("Connection Successful.")
+
+            # return the authenticated client and selected model
             return client, selected_model
 
         except APIError:
@@ -131,8 +139,8 @@ def select_model(client, current_model=None):
     """
     available_models = []
 
+    # filtering only available text generation models
     allowed_prefixes = ("gemini-3.", "gemini-4-", "gemma-4-")
-
     blocked_tags = ("image", "banana", "omni", "tts", "live", "transcribe")
 
     # loop through all available models returned by the API
@@ -140,9 +148,11 @@ def select_model(client, current_model=None):
         # check if model supports text chat
         if "generateContent" in (model.supported_actions or []):
             clean_name = model.name.replace("models/", "")
+            # check if the models name has the allowed prefixes and no blocked tags
             if clean_name.startswith(allowed_prefixes) and not any(tag in clean_name for tag in blocked_tags):
                 available_models.append(clean_name)
 
+    # add a back option to the list if we have a model selected already
     if current_model:
         available_models.append("<- Back")
 
@@ -178,10 +188,11 @@ def start_chat(chat, model_name):
 
         # try to send the user input message and receive response
         try:
+            # use the braille "dots" spinner for a loading animation until the LLM responds
             with console.status("Waiting for Gemini...", spinner="dots"):
                 response = chat.send_message(user_input)
-
             print(f"\n{Tools.GREEN}{model_name} :{Tools.RESET}")
+
             if response.text:
                 # print LLM response with markdown formatting
                 console.print(Markdown(response.text))
@@ -194,13 +205,15 @@ def start_chat(chat, model_name):
 
 def create_chat(client, model_name):
     """
-    Creates a session with the chosen model and weather tool
+    Creates a session with the chosen model and the weather tool.
+    Defines the LLM's behavior.
     """
+    # get the current date for the LLM so it can reference the forecast accurately.
     today = datetime.now().strftime("%A, %B %d, %Y")
 
     # clients.chats.create automatically manages convo history, agent prompts, and tool calling
     return client.chats.create(
-        # variable passes the model selected in the 'select_model' function
+        # passes the model returned in the select_model() function
         model=model_name,
         # generate instructions for the model
         config=types.GenerateContentConfig(
@@ -214,17 +227,20 @@ def create_chat(client, model_name):
                 "Summarize the returned data and WMO weather codes in plain, conversational language. "
                 "Finally, suggest activities and clothing recommendations based on the weather and location. "
             ),
+            # give the LLM the get_current_weather() func as a tool
             tools=[get_current_weather],
+            # limit function call to 4 per response
             automatic_function_calling = types.AutomaticFunctionCallingConfig(maximum_remote_calls=4),
         )
     )
 
 def main():
-    # call the setup function
+    # assign the setup() authenticated client and selected model
     client, current_model = setup()
+    # create chat with authenticated client and selected model
     chat = create_chat(client, current_model)
 
-    # TUI menu
+    # Main TUI menu
     while True:
         Tools.clear_terminal()
         model_selection_label = f"Select Model (Current: {current_model})"
